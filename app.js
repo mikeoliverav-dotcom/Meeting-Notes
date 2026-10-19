@@ -2,7 +2,7 @@
 /* Meeting Notes — record a call, capture screenshots and notes, transcribe in the browser with Whisper,
    then hand everything to Claude and turn the reply into a finished document. Everything is stored on this computer. */
 
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '1.6.0';
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
@@ -61,13 +61,13 @@ async function renderHome() {
   show('home'); $('hdrTitle').hidden = true; $('recChip').hidden = true; document.title = 'Meeting Notes';
   const list = (await idb.all('meetings')).sort((a, b) => b.createdAt - a.createdAt);
   $('listWrap').hidden = !list.length;
-  const status = m => m.finalMd ? ['done', 'Done']
-    : m.rec?.chunks && !m.tx?.done ? ['todo', m.tx?.segments?.length ? 'Transcript paused' : 'To transcribe']
+  const status = m => TX.job?.id === m.id ? ['run', `Transcribing ${Math.round(TX.pct)}%`] : m.finalMd ? ['done', 'Done']
+    : m.rec?.chunks && !m.tx?.done ? ['todo', m.tx?.userPaused ? 'Transcript paused' : 'Waiting to transcribe']
     : (m.tx?.done || m.notes?.length) ? ['todo', 'To write up'] : ['', 'Empty'];
-  const todo = list.filter(m => status(m)[0] === 'todo').length;
+  const todo = list.filter(m => /todo|run/.test(status(m)[0])).length;
   $('todoCount').textContent = todo ? `${todo} to finish` : '';
   $('mlist').innerHTML = list.map(m => { const [c, l] = status(m); return `<div class="mitem"><a href="?m=${m.id}" data-id="${m.id}">${esc(m.title)}</a>
-      <span>${esc(day(m.createdAt))} · ${esc(hm(m.rec?.start || m.createdAt))}${m.rec?.duration ? ' · ' + dur(m.rec.duration) : ''}</span><b class="pill ${c}">${l}</b></div>`; }).join('');
+      <span>${esc(day(m.createdAt))} · ${esc(hm(m.rec?.start || m.createdAt))}${m.rec?.duration ? ' · ' + dur(m.rec.duration) : ''}</span><b class="pill ${c}" data-id="${m.id}">${l}</b></div>`; }).join('');
   $('ver').textContent = 'v' + APP_VERSION;
   try { const e = await navigator.storage.estimate(); $('usage').textContent = `${Math.round((e.usage || 0) / 1048576)} MB used`; } catch (_) {}
 }
@@ -81,7 +81,7 @@ $('helpLink').onclick = e => { e.preventDefault(); $('help').hidden = !$('help')
 
 /* ---------------- meeting view ---------------- */
 async function openMeeting(id) {
-  M = await idb.get('meetings', id);
+  M = TX.job && TX.job.id === id ? TX.job.mt : await idb.get('meetings', id);
   if (!M) { history.replaceState(null, '', './'); return renderHome(); }
   show('meet');
   const t = $('hdrTitle'); t.hidden = false; t.value = M.title; document.title = M.title + ' — Meeting Notes';
@@ -285,6 +285,7 @@ async function startRecording() {
   try {
     display = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 5, width: { ideal: 3840 }, height: { ideal: 2160 } }, audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }, systemAudio: 'include', selfBrowserSurface: 'exclude', surfaceSwitching: 'include' });
   } catch (e) { return toast('Recording didn\'t start: nothing was shared.'); }
+  if (TX.running) { await txStop(false); toast('Background transcription paused while you record. It picks up again when you stop.', 4000); }
   let mic = null;
   if ($('useMic').checked) { try { mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); } catch (_) { toast('Microphone not available. Recording call audio only.', 4000); } }
   const callTracks = display.getAudioTracks();
@@ -338,7 +339,8 @@ async function finishRecording() {
   $('shareVid').srcObject = null; REC.video = null;
   if (M?.rec) { M.rec.duration = REC.activeMs / 1000; M.rec.ended = true; M.rec.chunks = REC.seq; }
   await saveNow(); renderRecPanel(); REC._stopRes?.();
-  toast(M?.tx?.stale ? 'Recording saved. Transcribe again to include the new part.' : 'Recording saved. Click Transcribe when you\'re ready.', 4000);
+  toast('Recording saved. Transcribing it in the background.', 3500);
+  setTimeout(txQueue, 300);
 }
 $('recBtn').onclick = startRecording;
 $('stopBtn').onclick = stopRecording;
@@ -350,24 +352,37 @@ $('pauseBtn').onclick = () => {
 };
 window.addEventListener('beforeunload', e => { if (REC.active || TX.running) { e.preventDefault(); e.returnValue = ''; } });
 
-async function recordingBlob() {
-  const chunks = (await idb.byMeeting(M.id)).filter(b => b.kind === 'chunk').sort((a, b) => a.seq - b.seq);
+async function recordingBlob(mt = M) {
+  const chunks = (await idb.byMeeting(mt.id)).filter(b => b.kind === 'chunk').sort((a, b) => a.seq - b.seq);
   if (!chunks.length) return null;
-  return new Blob(chunks.map(c => c.blob), { type: (M.rec?.mime || 'audio/webm').split(';')[0] });
+  return new Blob(chunks.map(c => c.blob), { type: (mt.rec?.mime || 'audio/webm').split(';')[0] });
 }
 
-/* ---------------- transcription ---------------- */
-const TX = { running: false, worker: null };
+/* ---------------- transcription ----------------
+   Runs on its own: when a recording stops, and when the app opens, any meeting with an
+   untranscribed recording is transcribed in the background (oldest first). It waits while
+   you're recording, so it never competes with a live call. */
+const TX = { running: false, worker: null, job: null, msg: '', pct: 0, failed: new Set() };
+const txModel = () => { try { return localStorage.getItem('mn.model') || $('model').value; } catch (_) { return $('model').value; } };
+$('model').onchange = () => { try { localStorage.setItem('mn.model', $('model').value); } catch (_) {} };
 function renderTxPanel() {
-  const t = M?.tx;
-  if (t?.model) $('model').value = t.model;
+  const t = M?.tx, mine = TX.job && M && TX.job.id === M.id;
+  $('model').value = t?.model || txModel();
   $('txBtn').textContent = t?.done ? 'Transcribe again' : t?.segments?.length ? 'Continue transcribing' : 'Transcribe recording';
   let info = '';
   if (t?.done) info = `Transcript: ${t.segments.length} lines${t.source === 'file' ? ` from ${t.fileName}` : ''}${t.device ? ` · ${t.device === 'webgpu' ? 'graphics card' : 'processor'}` : ''}.`;
   if (t?.stale) info += ' The recording has new audio since this transcript.';
-  if (!M?.rec?.ended && !t) info = 'Available after you stop recording. You can also transcribe an audio file, such as a Teams or Zoom recording.';
+  if (!M?.rec?.ended && !t) info = 'Starts on its own when you stop recording. You can also transcribe an audio file, such as a Teams or Zoom recording.';
+  if (TX.running && !mine) info = `Transcribing “${TX.job.mt.title}” in the background.${M?.rec?.ended && !t?.done ? ' This meeting is up next.' : ''}`;
+  if (t?.userPaused && !t.done && !mine) info = 'Transcription paused. Click Continue transcribing to pick it up.';
   $('txInfo').textContent = info;
+  $('txProg').hidden = !mine; if (mine) { $('txBar').style.width = TX.pct + '%'; $('txMsg').textContent = TX.msg; }
   renderSteps();
+}
+function txStatus(msg, pct) {
+  TX.msg = msg; if (pct != null) TX.pct = pct;
+  if (TX.job && M && M.id === TX.job.id) { $('txMsg').textContent = msg; $('txBar').style.width = TX.pct + '%'; }
+  const pill = document.querySelector(`.pill[data-id="${TX.job?.id}"]`); if (pill) pill.textContent = `Transcribing ${Math.round(TX.pct)}%`;
 }
 async function decodeTo16k(blob) {
   const buf = await blob.arrayBuffer();
@@ -384,21 +399,26 @@ function makeWorker() {
   if (window.MN_FAKE_ASR) return window.MN_FAKE_ASR();   // used by automated tests only
   return new Worker('whisper-worker.js', { type: 'module' });
 }
-async function transcribe(source) {
-  if (TX.running) return;
-  TX.running = true; renderSteps(); let txFin; TX.finished = new Promise(r => { txFin = r; });
-  $('txProg').hidden = false; $('txBar').style.width = '0%'; $('txMsg').textContent = 'Reading the audio…';
+async function transcribe(source = {}, id = M?.id) {
+  if (TX.running || !id) return;
+  const mt = M && M.id === id ? M : await idb.get('meetings', id); if (!mt) return;
+  const here = () => M && M.id === id;
+  const save = async () => { if (here()) return saveNow(); mt.updatedAt = Date.now(); try { await idb.put('meetings', JSON.parse(JSON.stringify(mt))); } catch (_) {} };
+  TX.running = true; TX.job = { id, mt }; TX.pct = 0; TX.msg = 'Reading the audio…';
+  let txFin; TX.finished = new Promise(r => { txFin = r; });
+  if (here()) renderTxPanel();
   try {
     let blob = source.blob;
-    if (!blob) { blob = await recordingBlob(); if (!blob) throw new Error('There is no recording yet.'); }
+    if (!blob) { blob = await recordingBlob(mt); if (!blob) throw new Error('There is no recording yet.'); }
     const audio = await decodeTo16k(blob);
-    const model = $('model').value;
-    const resume = !source.file && M.tx && !M.tx.done && M.tx.model === model && M.tx.source === 'recording' && M.tx.upTo > 0 && !M.tx.stale;
-    if (!resume) M.tx = { model, segments: [], upTo: 0, done: false, source: source.file ? 'file' : 'recording', fileName: source.file || '', base: source.file ? { start: M.rec?.start || M.createdAt, segs: [{ clock: M.rec?.start || M.createdAt, audioAt: 0 }] } : null };
-    else M.tx.segments = M.tx.segments.filter(s => s.start < M.tx.upTo);
-    await saveNow();
-    const totalSec = audio.length / 16000, started = Date.now(), startAt = resume ? M.tx.upTo : 0;
-    $('txMsg').textContent = 'Loading the speech model… (the first time, this downloads it)';
+    const model = source.file ? $('model').value : (mt.tx?.model && !mt.tx.done ? mt.tx.model : (here() ? $('model').value : txModel()));
+    const resume = !source.file && mt.tx && !mt.tx.done && mt.tx.model === model && mt.tx.source === 'recording' && mt.tx.upTo > 0 && !mt.tx.stale;
+    if (!resume) mt.tx = { model, segments: [], upTo: 0, done: false, source: source.file ? 'file' : 'recording', fileName: source.file || '', base: source.file ? { start: mt.rec?.start || mt.createdAt, segs: [{ clock: mt.rec?.start || mt.createdAt, audioAt: 0 }] } : null };
+    else mt.tx.segments = mt.tx.segments.filter(s => s.start < mt.tx.upTo);
+    delete mt.tx.userPaused;
+    await save();
+    const totalSec = audio.length / 16000, started = Date.now(), startAt = resume ? mt.tx.upTo : 0;
+    txStatus('Loading the speech model… (the first time, this downloads it)', 0);
     const w = TX.worker = makeWorker();
     await new Promise((resolve, reject) => {
       const files = {};
@@ -406,16 +426,14 @@ async function transcribe(source) {
         const m = ev.data;
         if (m.type === 'download') {
           files[m.file] = [m.loaded, m.total]; const l = Object.values(files).reduce((a, x) => a + (x[0] || 0), 0), tt = Object.values(files).reduce((a, x) => a + (x[1] || 0), 0);
-          $('txMsg').textContent = `Downloading the speech model (one time): ${Math.round(l / 1048576)} of ${Math.round(tt / 1048576) || '…'} MB`;
-          if (tt) $('txBar').style.width = Math.round(l / tt * 100) + '%';
+          txStatus(`Downloading the speech model (one time): ${Math.round(l / 1048576)} of ${Math.round(tt / 1048576) || '…'} MB`, tt ? Math.round(l / tt * 100) : 0);
         } else if (m.type === 'note') toast(m.message, 4000);
-        else if (m.type === 'ready') { M.tx.device = m.device; $('txBar').style.width = '0%'; $('txMsg').textContent = `Transcribing ${dur(totalSec)} of audio…`; }
+        else if (m.type === 'ready') { mt.tx.device = m.device; txStatus(`Transcribing ${dur(totalSec)} of audio…`, startAt / totalSec * 100); }
         else if (m.type === 'progress') {
-          M.tx.segments.push(...m.segments); M.tx.upTo = m.upTo; saveSoon(); renderTimeline();
-          const frac = m.upTo / totalSec, el = (Date.now() - started) / 1000, worked = m.upTo - startAt;
+          mt.tx.segments.push(...m.segments); mt.tx.upTo = m.upTo; save(); if (here()) renderTimeline();
+          const el = (Date.now() - started) / 1000, worked = m.upTo - startAt;
           const left = worked > 0 ? el / worked * (totalSec - m.upTo) : 0;
-          $('txBar').style.width = Math.round(frac * 100) + '%';
-          $('txMsg').textContent = `Transcribed ${dur(m.upTo)} of ${dur(totalSec)}${left > 5 ? ` · about ${dur(left)} left` : ''}`;
+          txStatus(`Transcribed ${dur(m.upTo)} of ${dur(totalSec)}${left > 5 ? ` · about ${dur(left)} left` : ''}`, m.upTo / totalSec * 100);
         } else if (m.type === 'done') resolve();
         else if (m.type === 'error') reject(new Error(m.message));
       };
@@ -424,20 +442,35 @@ async function transcribe(source) {
       const pcm = new Float32Array(audio);   // own copy so it can be handed to the worker
       w.postMessage({ type: 'transcribe', model, audio: pcm, startAt, windowSec: 120, preferGpu: true }, [pcm.buffer]);
     });
-    M.tx.done = true; M.tx.stale = false; await saveNow();
-    toast(`Transcript ready: ${M.tx.segments.length} lines.`);
+    mt.tx.done = true; mt.tx.stale = false; await save();
+    toast(`Transcript ready for “${mt.title}”: ${mt.tx.segments.length} lines.`, 4000);
   } catch (e) {
-    if (e.message !== 'cancelled') toast('Transcription stopped: ' + e.message, 6000);
-    await saveNow();
+    if (e.message === 'cancelled') { if (TX.userCancel && mt.tx) mt.tx.userPaused = true; }
+    else { TX.failed.add(id); toast(`Transcription of “${mt.title}” stopped: ${e.message}`, 6000); }
+    await save();
   } finally {
     try { TX.worker?.terminate(); } catch (_) {}
-    TX.worker = null; TX.running = false; $('txProg').hidden = true; if (M) { renderTxPanel(); renderTimeline(); } txFin();
+    TX.worker = null; TX.running = false; TX.job = null; TX.reject = null; TX.userCancel = false;
+    if (here()) { renderTxPanel(); renderTimeline(); }
+    if (!$('vHome').hidden) renderHome();
+    txFin();
   }
 }
-$('txBtn').onclick = () => transcribe({});
+function txStop(byUser) { if (TX.reject) { TX.userCancel = !!byUser; TX.reject(new Error('cancelled')); } return TX.finished || Promise.resolve(); }
+// Picks the next meeting that needs a transcript and starts it
+async function txQueue() {
+  if (TX.running || REC.active) return;
+  const all = await idb.all('meetings');
+  const next = all.filter(m => m.rec?.ended && m.rec.chunks && !TX.failed.has(m.id) && !m.tx?.userPaused &&
+      (!m.tx || m.tx.stale || (!m.tx.done && m.tx.source !== 'file'))).sort((a, b) => a.createdAt - b.createdAt)[0];
+  if (!next) return;
+  await transcribe({}, next.id);
+  setTimeout(txQueue, 300);
+}
+$('txBtn').onclick = () => { if (M?.tx) delete M.tx.userPaused; TX.failed.delete(M.id); transcribe({}); };
 $('txFileBtn').onclick = () => $('txFile').click();
 $('txFile').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) transcribe({ blob: f, file: f.name }); };
-$('txCancel').onclick = () => { if (TX.reject) TX.reject(new Error('cancelled')); toast('Transcription paused. Click Continue transcribing to pick up where it left off.', 4000); };
+$('txCancel').onclick = () => { txStop(true); toast('Transcription paused. Click Continue transcribing to pick up where it left off.', 4000); };
 
 /* ---------------- Claude handoff ---------------- */
 function claudeText() {
@@ -746,6 +779,7 @@ async function buildDocx() {
 }
 twoTap($('delMeeting'), 'Tap again to delete for good', async () => {
   if (REC.active) return toast('Stop recording first.');
+  if (TX.job?.id === M.id) await txStop(false);
   for (const k of await idb.keysByMeeting(M.id)) await idb.del('blobs', k);
   await idb.del('meetings', M.id); M = null; history.pushState(null, '', './'); renderHome(); toast('Meeting deleted.');
 });
@@ -753,14 +787,13 @@ twoTap($('delMeeting'), 'Tap again to delete for good', async () => {
 /* ---------------- leaving a meeting (back-to-back meetings) ---------------- */
 async function goHome() {
   const b = $('backBtn');
-  if (REC.active || TX.running) {
+  if (REC.active) {
     if (!b.classList.contains('confirm')) {
-      b.classList.add('confirm'); b.textContent = REC.active ? 'Stop recording & leave?' : 'Pause transcript & leave?';
+      b.classList.add('confirm'); b.textContent = 'Stop recording & leave?';
       clearTimeout(b._t); b._t = setTimeout(() => { b.classList.remove('confirm'); b.textContent = '← Meetings'; }, 4000); return;
     }
     clearTimeout(b._t); b.classList.remove('confirm'); b.textContent = '← Meetings';
-    if (REC.active) { stopRecording(); await REC.stopped; }
-    if (TX.running) { TX.reject?.(new Error('cancelled')); await TX.finished; }
+    stopRecording(); await REC.stopped;
   }
   await saveNow(); M = null; history.pushState(null, '', './'); renderHome(); window.scrollTo(0, 0);
 }
@@ -771,7 +804,8 @@ $('mlist').addEventListener('click', e => { const a = e.target.closest('a[data-i
 /* ---------------- start ---------------- */
 function route() { const id = new URLSearchParams(location.search).get('m'); if (id) openMeeting(id); else renderHome(); }
 window.addEventListener('popstate', () => {
-  if (M && (REC.active || TX.running)) { history.pushState(null, '', '?m=' + M.id); return toast(REC.active ? 'Still recording. Use ← Meetings to stop and leave.' : 'Still transcribing. Use ← Meetings to pause it and leave.', 4000); }
+  if (M && REC.active) { history.pushState(null, '', '?m=' + M.id); return toast('Still recording. Use ← Meetings to stop and leave.', 4000); }
   route();
 });
 route();
+setTimeout(txQueue, 1500);   // finish any transcripts left over from last time

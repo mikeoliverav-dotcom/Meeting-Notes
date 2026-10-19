@@ -2,7 +2,7 @@
 /* Meeting Notes — record a call, capture screenshots and notes, transcribe in the browser with Whisper,
    then hand everything to Claude and turn the reply into a finished document. Everything is stored on this computer. */
 
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.5.0';
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
@@ -54,21 +54,27 @@ const snipCache = new Map();
 let saveT;
 function saveSoon() { clearTimeout(saveT); saveT = setTimeout(saveNow, 400); }
 async function saveNow() { if (!M) return; clearTimeout(saveT); M.updatedAt = Date.now(); try { await idb.put('meetings', JSON.parse(JSON.stringify(M))); } catch (e) { toast('Could not save: ' + (e.message || e)); } }
-function show(v) { $('vHome').hidden = v !== 'home'; $('vMeet').hidden = v !== 'meet'; }
+function show(v) { $('vHome').hidden = v !== 'home'; $('vMeet').hidden = v !== 'meet'; $('backBtn').hidden = v !== 'meet'; }
 
 /* ---------------- home ---------------- */
 async function renderHome() {
   show('home'); $('hdrTitle').hidden = true; $('recChip').hidden = true; document.title = 'Meeting Notes';
   const list = (await idb.all('meetings')).sort((a, b) => b.createdAt - a.createdAt);
   $('listWrap').hidden = !list.length;
-  $('mlist').innerHTML = list.map(m => `<div class="mitem"><a href="?m=${m.id}">${esc(m.title)}</a>
-      <span>${esc(day(m.createdAt))}${m.rec?.duration ? ' · ' + dur(m.rec.duration) : ''}${m.tx?.done ? ' · transcribed' : ''}${m.finalMd ? ' · final notes' : ''}</span></div>`).join('');
+  const status = m => m.finalMd ? ['done', 'Done']
+    : m.rec?.chunks && !m.tx?.done ? ['todo', m.tx?.segments?.length ? 'Transcript paused' : 'To transcribe']
+    : (m.tx?.done || m.notes?.length) ? ['todo', 'To write up'] : ['', 'Empty'];
+  const todo = list.filter(m => status(m)[0] === 'todo').length;
+  $('todoCount').textContent = todo ? `${todo} to finish` : '';
+  $('mlist').innerHTML = list.map(m => { const [c, l] = status(m); return `<div class="mitem"><a href="?m=${m.id}" data-id="${m.id}">${esc(m.title)}</a>
+      <span>${esc(day(m.createdAt))} · ${esc(hm(m.rec?.start || m.createdAt))}${m.rec?.duration ? ' · ' + dur(m.rec.duration) : ''}</span><b class="pill ${c}">${l}</b></div>`; }).join('');
   $('ver').textContent = 'v' + APP_VERSION;
-  try { const e = await navigator.storage.estimate(); $('usage').textContent = `· ${Math.round((e.usage || 0) / 1048576)} MB used`; } catch (_) {}
+  try { const e = await navigator.storage.estimate(); $('usage').textContent = `${Math.round((e.usage || 0) / 1048576)} MB used`; } catch (_) {}
 }
 $('newForm').addEventListener('submit', async e => {
   e.preventDefault();
   M = { id: uid(), title: $('newTitle').value.trim() || 'Meeting', createdAt: Date.now(), notes: [], rec: null, tx: null, finalMd: '' };
+  $('newTitle').value = '';
   await saveNow(); history.pushState(null, '', '?m=' + M.id); openMeeting(M.id);
 });
 $('helpLink').onclick = e => { e.preventDefault(); $('help').hidden = !$('help').hidden; };
@@ -322,6 +328,7 @@ function stopRecording() {
   if (!REC.active) return;
   if (!REC.paused) REC.activeMs += Date.now() - REC.lastResume;
   REC.paused = false; REC.active = false;
+  REC.stopped = new Promise(r => { REC._stopRes = r; setTimeout(r, 8000); });
   try { REC.recorder.state !== 'inactive' && REC.recorder.stop(); } catch (_) { finishRecording(); }
 }
 async function finishRecording() {
@@ -330,7 +337,7 @@ async function finishRecording() {
   try { await REC.ctx?.close(); } catch (_) {}
   $('shareVid').srcObject = null; REC.video = null;
   if (M?.rec) { M.rec.duration = REC.activeMs / 1000; M.rec.ended = true; M.rec.chunks = REC.seq; }
-  await saveNow(); renderRecPanel();
+  await saveNow(); renderRecPanel(); REC._stopRes?.();
   toast(M?.tx?.stale ? 'Recording saved. Transcribe again to include the new part.' : 'Recording saved. Click Transcribe when you\'re ready.', 4000);
 }
 $('recBtn').onclick = startRecording;
@@ -379,7 +386,7 @@ function makeWorker() {
 }
 async function transcribe(source) {
   if (TX.running) return;
-  TX.running = true; renderSteps();
+  TX.running = true; renderSteps(); let txFin; TX.finished = new Promise(r => { txFin = r; });
   $('txProg').hidden = false; $('txBar').style.width = '0%'; $('txMsg').textContent = 'Reading the audio…';
   try {
     let blob = source.blob;
@@ -424,7 +431,7 @@ async function transcribe(source) {
     await saveNow();
   } finally {
     try { TX.worker?.terminate(); } catch (_) {}
-    TX.worker = null; TX.running = false; $('txProg').hidden = true; renderTxPanel(); renderTimeline();
+    TX.worker = null; TX.running = false; $('txProg').hidden = true; if (M) { renderTxPanel(); renderTimeline(); } txFin();
   }
 }
 $('txBtn').onclick = () => transcribe({});
@@ -456,16 +463,16 @@ What's below, in time order:
 Write the notes in Markdown with these sections:${M.notes.some(n => n.important) ? `
 ## Flagged as important (one bullet for each ★ item, in my words, with any helpful context from the transcript)` : ''}
 ## Summary (3–5 sentences)
-## Discussion (grouped by topic, concise bullet points)
 ## Decisions
 ## Action items (Owner — task — due date, when stated)
 ## Open questions
+## Timeline (the meeting split into segments by topic, in time order. Start each segment with a heading like "### 10:02 AM – 10:09 AM · Budget review", using clock times from the record, followed by concise bullet points of what was discussed)
 
 Rules:
 - Use only what's in the record. Don't invent details. Fix obvious speech-recognition mistakes only when the meaning is clear; otherwise keep the wording and mark it with (?).
 - Name speakers only when the transcript or my notes make it clear who said something.
 - Every ★ item must appear in the "Flagged as important" section, and its point should also be reflected in the relevant section below.
-- Mark where each point came from: end every bullet, sentence or table row that is based on one of MY NOTE lines (or a ★ item) with [NOTE]. Points that come only from the transcript get no marker. If a point is in both, mark it [NOTE].
+- Don't copy MY NOTE lines into the Timeline; the app adds them there word for word. Use them to inform the other sections.
 - Put each screenshot tag on its own line right after the point it relates to, use every tag exactly once, and copy the tags exactly.
 - Reply with the Markdown notes only, no introduction.
 
@@ -544,10 +551,8 @@ $('finalIn').addEventListener('paste', e => {
 const snipByTag = tag => M.notes.find(n => n.kind === 'snip' && snipTag(n) === tag);
 const TAG_RE = /\[(IMG-[0-9A-F]{4})\]/g;
 const MINE_RE = /\s*[\[(](?:MY )?NOTE[\])]/gi;
-const MINE_RUN = { text: '✎ note', mine: true };
 function parseInline(s) {
-  if (MINE_RE.test(s)) { MINE_RE.lastIndex = 0; const r = parseInline(s.replace(MINE_RE, '').trimEnd()); r.push({ text: ' ' }, { ...MINE_RUN }); return r; }
-  MINE_RE.lastIndex = 0;
+  s = s.replace(MINE_RE, '');
   const runs = []; const re = /(\*\*[^*]+\*\*|__[^_]+__|\*[^*\s][^*]*\*|_[^_\s][^_]*_|`[^`]+`)/g; let last = 0, m;
   while ((m = re.exec(s))) {
     if (m.index > last) runs.push({ text: s.slice(last, m.index) });
@@ -583,6 +588,38 @@ function parseMd(md) {
   flush(); return out;
 }
 const FLAG_HEAD = 'Flagged as important';
+// Reads a clock time like "10:02 AM" from a heading and returns it as a time on the meeting's day
+function headTime(text) {
+  const m = text.match(/\b(\d{1,2}):(\d{2})(?::\d{2})?\s*([AaPp])?\.?[Mm]?\.?/); if (!m) return null;
+  const base = M.rec?.start || M.createdAt, d = new Date(base); let h = +m[1];
+  if (m[3]) { const pm = /p/i.test(m[3]); if (h === 12) h = pm ? 12 : 0; else if (pm) h += 12; }
+  d.setHours(h, +m[2], 0, 0); let t = d.getTime();
+  if (!m[3] && t < base - 6 * 3600e3) t += 12 * 3600e3;   // "2:15" in an afternoon meeting
+  return t;
+}
+// Puts each typed note, word for word, at the end of the timeline segment it was taken in
+function placeMyNotes(blocks) {
+  const mine = M.notes.filter(n => n.kind !== 'snip' && n.body?.trim()).sort((a, b) => a.at - b.at);
+  if (!mine.length) return;
+  const segs = [];
+  blocks.forEach((b, i) => { if (b.t === 'h' && b.level >= 3) { const t = headTime(b.runs.map(r => r.text).join('')); if (t != null) segs.push({ i, t, level: b.level }); } });
+  const mk = n => ({ t: 'mynote', at: n.at, text: n.body, important: !!n.important });
+  if (!segs.length) {   // reply has no timeline: list the notes as typed at the end
+    blocks.push({ t: 'h', level: 2, runs: [{ text: 'My notes (as typed)' }] }, ...mine.map(mk)); return;
+  }
+  const groups = segs.map(() => []);
+  for (const n of mine) {
+    const minute = Math.floor(n.at / 60000) * 60000;
+    let k = 0; segs.forEach((sg, j) => { if (sg.t <= minute) k = j; });
+    groups[k].push(mk(n));
+  }
+  for (let j = segs.length - 1; j >= 0; j--) {
+    if (!groups[j].length) continue;
+    let end = segs[j].i + 1;
+    while (end < blocks.length && !(blocks[end].t === 'h' && blocks[end].level <= segs[j].level)) end++;
+    blocks.splice(end, 0, ...groups[j]);
+  }
+}
 function finalBlocks() {
   const blocks = parseMd(M.finalMd || '');
   // Starred notes always appear in the final notes, even if Claude's reply left them out
@@ -591,23 +628,23 @@ function finalBlocks() {
   blocks.forEach((b, i) => { if (b.t === 'h' && /flag/i.test(b.runs.map(r => r.text).join('')) && blocks[i + 1]?.t === 'list') blocks[i + 1].flagged = true; });
   if (flagged.length && !hasFlagSection) {
     blocks.unshift({ t: 'h', level: 2, runs: [{ text: FLAG_HEAD }] }, { t: 'list', ordered: false, flagged: true,
-      items: flagged.map(n => ({ level: 0, runs: [{ text: n.kind === 'snip' ? `Screenshot${n.body ? ': ' + n.body : ''}` : n.body.replace(/\n+/g, ' ') }, { text: `  (${hm(n.at)}) `, italic: true }, { ...MINE_RUN }] })) });
+      items: flagged.map(n => ({ level: 0, runs: [{ text: n.kind === 'snip' ? `Screenshot${n.body ? ': ' + n.body : ''}` : n.body.replace(/\n+/g, ' ') }, { text: `  (${hm(n.at)})`, italic: true }] })) });
   }
+  placeMyNotes(blocks);
   const used = new Set(blocks.filter(b => b.t === 'img').map(b => b.tag));
   const extra = M.notes.filter(n => n.kind === 'snip' && !used.has(snipTag(n))).sort((a, b) => a.at - b.at);
   if (extra.length) { blocks.push({ t: 'h', level: 2, runs: [{ text: 'Other screenshots' }] }); extra.forEach(n => blocks.push({ t: 'img', tag: snipTag(n) })); }
   return blocks;
 }
-const LEGEND = 'Points marked ✎ note come from notes typed during the meeting. Unmarked points come from the recording transcript.';
-const hasMine = blocks => blocks.some(b => [...(b.runs || []), ...(b.items || []).flatMap(i => i.runs), ...(b.rows || []).flat(2)].some(r => r.mine));
-const runsHtml = runs => runs.map(r => { if (r.mine) return `<span class="mine">${esc(r.text)}</span>`; let h = esc(r.text); if (r.code) h = `<code>${h}</code>`; if (r.bold) h = `<strong>${h}</strong>`; if (r.italic) h = `<em>${h}</em>`; return h; }).join('');
+const runsHtml = runs => runs.map(r => { let h = esc(r.text); if (r.code) h = `<code>${h}</code>`; if (r.bold) h = `<strong>${h}</strong>`; if (r.italic) h = `<em>${h}</em>`; return h; }).join('');
 function metaLine() { const s = M.rec?.start || M.createdAt, e = M.rec?.start ? audioToClock(M.rec.duration || 0, M.rec) : s; return `${day(s)} · ${hm(s)}–${hm(e)}${M.rec?.duration ? ` · ${dur(M.rec.duration)} recorded` : ''}`; }
 function renderFinal() {
   const md = M.finalMd || '';
   $('finalEmpty').hidden = !!md; $('finalDoc').hidden = !md;
   if (!md) return;
   const fb = finalBlocks();
-  $('finalDoc').innerHTML = `<h1>${esc(M.title)}</h1><div class="dmeta">${esc(metaLine())}</div>` + (hasMine(fb) ? `<div class="legend">${runsHtml([{ text: 'Points marked ' }, { ...MINE_RUN }, { text: LEGEND.replace('Points marked ✎ note', '') }])}</div>` : '') + fb.map(b => {
+  $('finalDoc').innerHTML = `<h1>${esc(M.title)}</h1><div class="dmeta">${esc(metaLine())}</div>` + fb.map(b => {
+    if (b.t === 'mynote') return `<div class="mynote"><span class="mnl">${b.important ? '★ ' : ''}My note · ${esc(hm(b.at))}</span>${esc(b.text).replace(/\n/g, '<br>')}</div>`;
     if (b.t === 'h') { const h = b.level <= 2 ? 2 : 3; return `<h${h}>${runsHtml(b.runs)}</h${h}>`; }
     if (b.t === 'p') return `<p>${runsHtml(b.runs)}</p>`;
     if (b.t === 'hr') return '<hr>';
@@ -641,8 +678,8 @@ code{font-family:Consolas,monospace;font-size:10pt}
 .fig small{display:block;color:#5a6064;font-size:9.5pt;margin-top:3pt}
 .flagged{border-left:4pt solid #b7791f;background:#fbf5e6;padding:6pt 10pt 6pt 24pt;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 hr{border:0;border-top:1px solid #d5dad8;margin:12pt 0}
-.mine{display:inline-block;font-size:8.5pt;font-weight:600;color:#1f5f99;background:#e6f0fa;border-radius:3pt;padding:0 4pt;white-space:nowrap;-webkit-print-color-adjust:exact;print-color-adjust:exact}
-.legend{font-size:9.5pt;color:#5a6064;margin:-6pt 0 10pt}
+.mynote{border-left:3pt solid #1f5f99;background:#eef4fb;padding:4pt 8pt;margin:4pt 0 8pt 12pt;break-inside:avoid;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.mnl{display:block;font-size:9pt;font-weight:700;color:#1f5f99}
 </style></head><body>${doc.innerHTML}</body></html>`;
 }
 $('dlPdf').onclick = async () => {
@@ -674,16 +711,17 @@ $('dlWord').onclick = async () => {
 };
 async function buildDocx() {
   const D = window.docx;
-  const toRuns = runs => runs.map(r => r.mine ? new D.TextRun({ text: r.text, bold: true, color: '1F5F99', size: 17, shading: { type: D.ShadingType.CLEAR, color: 'auto', fill: 'E6F0FA' } }) : new D.TextRun({ text: r.text, bold: !!r.bold, italics: !!r.italic, font: r.code ? 'Consolas' : undefined }));
+  const toRuns = runs => runs.map(r => new D.TextRun({ text: r.text, bold: !!r.bold, italics: !!r.italic, font: r.code ? 'Consolas' : undefined }));
   const H = [D.HeadingLevel.HEADING_1, D.HeadingLevel.HEADING_1, D.HeadingLevel.HEADING_1, D.HeadingLevel.HEADING_2];
   const children = [
     new D.Paragraph({ heading: D.HeadingLevel.TITLE, children: [new D.TextRun({ text: M.title })] }),
     new D.Paragraph({ children: [new D.TextRun({ text: metaLine(), color: '5A6064', size: 20 })], spacing: { after: 200 } })
   ];
   const fb = finalBlocks();
-  if (hasMine(fb)) children.push(new D.Paragraph({ children: [new D.TextRun({ text: 'Points marked ', color: '5A6064', size: 19 }), ...toRuns([{ ...MINE_RUN }]), new D.TextRun({ text: LEGEND.replace('Points marked ✎ note', ''), color: '5A6064', size: 19 })], spacing: { after: 200 } }));
   for (const b of fb) {
     if (b.t === 'h') children.push(new D.Paragraph({ heading: H[b.level], children: toRuns(b.runs) }));
+    else if (b.t === 'mynote') children.push(new D.Paragraph({ shading: { type: D.ShadingType.CLEAR, color: 'auto', fill: 'EEF4FB' }, border: { left: { color: '1F5F99', style: D.BorderStyle.SINGLE, size: 18, space: 8 } }, indent: { left: 240 }, spacing: { before: 60, after: 120 },
+      children: [new D.TextRun({ text: `${b.important ? '★ ' : ''}My note · ${hm(b.at)}`, bold: true, color: '1F5F99', size: 18, break: 0 }), ...b.text.split('\n').map((l, k) => new D.TextRun({ text: l, break: 1 }))] }));
     else if (b.t === 'p') children.push(new D.Paragraph({ children: toRuns(b.runs), spacing: { after: 120 } }));
     else if (b.t === 'hr') children.push(new D.Paragraph({ border: { bottom: { color: 'CCCCCC', style: D.BorderStyle.SINGLE, size: 6, space: 1 } }, children: [] }));
     else if (b.t === 'list') b.items.forEach(it => children.push(new D.Paragraph(b.ordered ? { children: toRuns(it.runs), numbering: { reference: 'nums', level: it.level } } : { children: toRuns(it.runs), bullet: { level: it.level } })));
@@ -691,7 +729,7 @@ async function buildDocx() {
       const cols = Math.max(...b.rows.map(r => r.length));
       children.push(new D.Table({ width: { size: 100, type: D.WidthType.PERCENTAGE }, rows: b.rows.map((r, ri) => new D.TableRow({ tableHeader: ri === 0,
         children: Array.from({ length: cols }, (_, ci) => new D.TableCell({ shading: ri === 0 ? { fill: '14181B', type: D.ShadingType.CLEAR, color: 'auto' } : undefined,
-          children: [new D.Paragraph({ children: (r[ci] || [{ text: '' }]).map(x => x.mine ? toRuns([x])[0] : new D.TextRun({ text: x.text, bold: ri === 0 || !!x.bold, italics: !!x.italic, color: ri === 0 ? 'FFFFFF' : undefined })) })] })) })) }));
+          children: [new D.Paragraph({ children: (r[ci] || [{ text: '' }]).map(x => new D.TextRun({ text: x.text, bold: ri === 0 || !!x.bold, italics: !!x.italic, color: ri === 0 ? 'FFFFFF' : undefined })) })] })) })) }));
       children.push(new D.Paragraph({ children: [] }));
     } else if (b.t === 'img') {
       const n = snipByTag(b.tag); if (!n) continue;
@@ -712,7 +750,28 @@ twoTap($('delMeeting'), 'Tap again to delete for good', async () => {
   await idb.del('meetings', M.id); M = null; history.pushState(null, '', './'); renderHome(); toast('Meeting deleted.');
 });
 
+/* ---------------- leaving a meeting (back-to-back meetings) ---------------- */
+async function goHome() {
+  const b = $('backBtn');
+  if (REC.active || TX.running) {
+    if (!b.classList.contains('confirm')) {
+      b.classList.add('confirm'); b.textContent = REC.active ? 'Stop recording & leave?' : 'Pause transcript & leave?';
+      clearTimeout(b._t); b._t = setTimeout(() => { b.classList.remove('confirm'); b.textContent = '← Meetings'; }, 4000); return;
+    }
+    clearTimeout(b._t); b.classList.remove('confirm'); b.textContent = '← Meetings';
+    if (REC.active) { stopRecording(); await REC.stopped; }
+    if (TX.running) { TX.reject?.(new Error('cancelled')); await TX.finished; }
+  }
+  await saveNow(); M = null; history.pushState(null, '', './'); renderHome(); window.scrollTo(0, 0);
+}
+$('backBtn').onclick = goHome;
+document.querySelector('.brand').addEventListener('click', e => { e.preventDefault(); if (M) goHome(); });
+$('mlist').addEventListener('click', e => { const a = e.target.closest('a[data-id]'); if (!a || e.ctrlKey || e.metaKey) return; e.preventDefault(); history.pushState(null, '', '?m=' + a.dataset.id); openMeeting(a.dataset.id); window.scrollTo(0, 0); });
+
 /* ---------------- start ---------------- */
 function route() { const id = new URLSearchParams(location.search).get('m'); if (id) openMeeting(id); else renderHome(); }
-window.addEventListener('popstate', () => { if (!REC.active) route(); });
+window.addEventListener('popstate', () => {
+  if (M && (REC.active || TX.running)) { history.pushState(null, '', '?m=' + M.id); return toast(REC.active ? 'Still recording. Use ← Meetings to stop and leave.' : 'Still transcribing. Use ← Meetings to pause it and leave.', 4000); }
+  route();
+});
 route();

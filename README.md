@@ -56,7 +56,7 @@ Recording and transcription need a secure **https** address, which GitHub Pages 
    - **Pause** and **Stop** are in step 1. **Record more** adds to the same meeting.
 4. **Transcribe recording** (step 2). You can also choose **Use an audio file…** to transcribe a recording from elsewhere, such as a Teams or Zoom recording or a voice memo.
 5. **Copy for Claude** (step 3), paste it into a Claude chat, and copy Claude's reply.
-6. Copy Claude's reply with the **Copy** button under it (or select it and press Ctrl+C; headings, bullets and tables are kept either way), paste it in step 4 and click **Save final notes**. Screenshot tags like `[IMG-4F2A]` turn back into the actual screenshots. Any screenshot Claude didn't place goes into an "Other screenshots" section at the end. Points that came from your typed notes carry a small blue **✎ note** tag. Unmarked points came from the recording transcript.
+6. Copy Claude's reply with the **Copy** button under it (or select it and press Ctrl+C; headings, bullets and tables are kept either way), paste it in step 4 and click **Save final notes**. Screenshot tags like `[IMG-4F2A]` turn back into the actual screenshots. Any screenshot Claude didn't place goes into an "Other screenshots" section at the end. Claude organizes the discussion into a **Timeline** of time-stamped segments, and the app drops each note you typed, word for word, into the segment it was taken in, shown in a blue "My note" box.
 7. **Download** (step 5): **PDF** (choose "Save as PDF" in the print window), **Word**, the **Transcript** as a text file, or the **Audio**.
 
 **Recording etiquette and the law:** tell everyone on the call that you're recording. Texas only requires one party's consent, but participants in other states may be covered by all-party consent laws.
@@ -64,6 +64,8 @@ Recording and transcription need a secure **https** address, which GitHub Pages 
 ---
 
 ## Good to know
+
+- **Back-to-back meetings:** click **← Meetings** at the top to stop the recording and go straight to your list, then start the next meeting. Each meeting shows what's left: **To transcribe**, **To write up** or **Done**. Open any of them later to finish.
 
 - **Storage:** everything lives in this browser on this computer. An hour of audio is about 15 MB, and screenshots are a few hundred KB each. Delete old meetings from step 5 to free space. Clearing your browser's site data for this address deletes the meetings too.
 - **No speaker names:** Whisper writes down what was said, not who said it. Claude names speakers only when it's clear from the conversation or your notes.

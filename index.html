@@ -67,6 +67,12 @@ label.fl{display:flex;flex-direction:column;gap:5px;font-size:12px;font-weight:7
 .mitem{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
 .mitem a{flex:1;min-width:0;text-decoration:none;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mitem span{color:var(--muted);font-size:13px;white-space:nowrap}
+.pill{font-size:12px;font-weight:600;padding:2px 9px;border-radius:999px;white-space:nowrap;background:var(--soft);color:var(--muted)}
+.pill.todo{background:#fbf0d9;color:#8a5a0b} .pill.done{background:#e3f3e9;color:var(--ok)}
+@media (prefers-color-scheme:dark){.pill.todo{background:#3a2e14;color:#f2b84b}.pill.done{background:#163222;color:#5cc08a}}
+.todoc{text-transform:none;letter-spacing:0;font-weight:600;color:#8a5a0b;margin-right:auto}
+.backbtn{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.35);border-radius:6px;padding:4px 10px;font-size:13px;cursor:pointer;white-space:nowrap}
+.backbtn:hover{border-color:#fff} .backbtn.confirm{background:var(--rec);border-color:var(--rec)}
 
 /* meeting */
 .grid{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:20px;align-items:start}
@@ -142,8 +148,8 @@ video.hiddenvid{position:fixed;left:-9999px;width:2px;height:2px}
 .doc th,.doc td{border:1px solid #d5dad8;padding:6px 8px;text-align:left;vertical-align:top}
 .doc th{background:#14181b;color:#fff}
 .doc code{font-family:var(--mono);background:#f1f3f2;padding:0 4px;border-radius:3px}
-.doc .mine{display:inline-block;font-size:11.5px;font-weight:600;color:#1f5f99;background:#e6f0fa;border-radius:4px;padding:0 6px;white-space:nowrap;vertical-align:1px}
-.doc .legend{font-size:12.5px;color:#5a6064;margin:-10px 0 14px}
+.doc .mynote{border-left:3px solid #1f5f99;background:#eef4fb;padding:6px 10px;margin:6px 0 10px 16px;border-radius:0 6px 6px 0;font-size:14.5px;line-height:1.5}
+.doc .mynote .mnl{display:block;font-size:12px;font-weight:700;color:#1f5f99;margin-bottom:1px}
 .doc .fig{display:block;margin:10px 0 14px}
 .doc .fig img{display:block;max-width:100%;max-height:520px;border:1px solid #d5dad8;border-radius:6px}
 .doc .fig small{display:block;color:#5a6064;font-size:12px;margin-top:4px}
@@ -161,6 +167,7 @@ video.hiddenvid{position:fixed;left:-9999px;width:2px;height:2px}
 <body>
 <header class="topbar"><div class="in">
   <a class="brand" href="./">Meeting <span>Notes</span></a>
+  <button class="backbtn" id="backBtn" type="button" hidden>← Meetings</button>
   <input class="mtitle" id="hdrTitle" aria-label="Meeting name" maxlength="120" hidden>
   <span class="recchip" id="recChip" hidden><span class="recdot" id="recDot"></span><span id="recTime">0:00</span></span>
 </div></header>
@@ -178,7 +185,7 @@ video.hiddenvid{position:fixed;left:-9999px;width:2px;height:2px}
         <button class="btn primary" type="submit">New meeting</button>
       </form>
       <div id="listWrap" hidden>
-        <h2 class="sec">Your meetings <span id="usage" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
+        <h2 class="sec"><span>Your meetings</span><span id="todoCount" class="todoc"></span> <span id="usage" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
         <div class="mlist" id="mlist"></div>
       </div>
       <p class="sub">Works best in Chrome or Edge on a computer. <a href="#help" id="helpLink">How it works</a> · <span id="ver"></span></p>

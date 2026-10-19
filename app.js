@@ -2,7 +2,7 @@
 /* Meeting Notes — record a call, capture screenshots and notes, transcribe in the browser with Whisper,
    then hand everything to Claude and turn the reply into a finished document. Everything is stored on this computer. */
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.3.0';
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
@@ -453,7 +453,8 @@ What's below, in time order:
 - MY NOTE lines: notes I typed during the meeting. ★ marks things I flagged as important.
 - SCREENSHOT lines: screenshots I took, each with a tag like [IMG-4F2A] and sometimes a caption.
 
-Write the notes in Markdown with these sections:
+Write the notes in Markdown with these sections:${M.notes.some(n => n.important) ? `
+## Flagged as important (one bullet for each ★ item, in my words, with any helpful context from the transcript)` : ''}
 ## Summary (3–5 sentences)
 ## Discussion (grouped by topic, concise bullet points)
 ## Decisions
@@ -463,7 +464,8 @@ Write the notes in Markdown with these sections:
 Rules:
 - Use only what's in the record. Don't invent details. Fix obvious speech-recognition mistakes only when the meaning is clear; otherwise keep the wording and mark it with (?).
 - Name speakers only when the transcript or my notes make it clear who said something.
-- Give my ★ notes extra weight.
+- Every ★ item must appear in the "Flagged as important" section, and its point should also be reflected in the relevant section below.
+- Mark where each point came from: end every bullet, sentence or table row that is based on one of MY NOTE lines (or a ★ item) with [NOTE]. Points that come only from the transcript get no marker. If a point is in both, mark it [NOTE].
 - Put each screenshot tag on its own line right after the point it relates to, use every tag exactly once, and copy the tags exactly.
 - Reply with the Markdown notes only, no introduction.
 
@@ -483,9 +485,69 @@ $('saveFinal').onclick = async () => {
   const md = $('finalIn').value.trim(); if (!md) return toast('Paste Claude\'s reply first.');
   M.finalMd = md; M.finalAt = Date.now(); await saveNow(); renderFinal(); renderSteps(); setTab('final'); toast('Final notes saved.');
 };
+// Selecting Claude's reply and pressing Ctrl+C copies formatted HTML; turn it back into markdown
+function htmlToMd(html) {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  doc.querySelectorAll('script,style,button,svg').forEach(e => e.remove());
+  const inl = n => {
+    if (n.nodeType === 3) return n.nodeValue.replace(/\s+/g, ' ');
+    if (n.nodeType !== 1) return '';
+    const tg = n.tagName, c = [...n.childNodes].map(inl).join('');
+    if (tg === 'BR') return '\n';
+    if (!c.trim()) return c;
+    const pad = s => (/^\s/.test(c) ? ' ' : '') + s + (/\s$/.test(c) ? ' ' : '');
+    if (tg === 'STRONG' || tg === 'B') return pad(`**${c.trim()}**`);
+    if (tg === 'EM' || tg === 'I') return pad(`*${c.trim()}*`);
+    if (tg === 'CODE') return '`' + c + '`';
+    return c;
+  };
+  const out = [];
+  const list = (el, depth) => {
+    let i = 1;
+    for (const li of el.children) {
+      if (li.tagName !== 'LI') continue;
+      const own = [...li.childNodes].filter(x => !(x.nodeType === 1 && /^(UL|OL)$/.test(x.tagName)));
+      const txt = own.map(x => x.nodeType === 1 && x.tagName === 'P' ? inl(x) + ' ' : inl(x)).join('').replace(/\s+/g, ' ').trim();
+      out.push('  '.repeat(depth) + (el.tagName === 'OL' ? `${i++}. ` : '- ') + txt);
+      li.querySelectorAll(':scope > ul, :scope > ol').forEach(s => list(s, depth + 1));
+    }
+  };
+  const block = el => {
+    for (const n of el.childNodes) {
+      if (n.nodeType === 3) { if (n.nodeValue.trim()) out.push(n.nodeValue.trim(), ''); continue; }
+      if (n.nodeType !== 1) continue;
+      const tg = n.tagName;
+      if (/^H[1-6]$/.test(tg)) out.push('', '#'.repeat(Math.min(3, +tg[1])) + ' ' + inl(n).trim(), '');
+      else if (tg === 'UL' || tg === 'OL') { list(n, 0); out.push(''); }
+      else if (tg === 'TABLE') {
+        const rows = [...n.querySelectorAll('tr')].map(r => [...r.children].map(c => inl(c).trim().replace(/\|/g, '/')));
+        rows.forEach((r, k) => { out.push('| ' + r.join(' | ') + ' |'); if (k === 0) out.push('|' + r.map(() => '---').join('|') + '|'); });
+        out.push('');
+      } else if (tg === 'HR') out.push('', '---', '');
+      else if (tg === 'P' || tg === 'BLOCKQUOTE' || tg === 'PRE') out.push(...inl(n).trim().split('\n').map(s => s.trim()), '');
+      else if (n.querySelector('p,h1,h2,h3,h4,ul,ol,table,div')) block(n);
+      else { const t = inl(n).trim(); if (t) out.push(t, ''); }
+    }
+  };
+  block(doc.body);
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+$('finalIn').addEventListener('paste', e => {
+  const html = e.clipboardData?.getData('text/html');
+  if (!html || !/<(h[1-6]|li|p|table|strong|b)\b/i.test(html)) return;   // plain text or markdown: paste as-is
+  const md = htmlToMd(html); if (!md) return;
+  e.preventDefault();
+  const ta = e.target, a = ta.selectionStart, b = ta.selectionEnd;
+  ta.value = ta.value.slice(0, a) + md + ta.value.slice(b);
+  ta.selectionStart = ta.selectionEnd = a + md.length;
+});
 const snipByTag = tag => M.notes.find(n => n.kind === 'snip' && snipTag(n) === tag);
 const TAG_RE = /\[(IMG-[0-9A-F]{4})\]/g;
+const MINE_RE = /\s*[\[(](?:MY )?NOTE[\])]/gi;
+const MINE_RUN = { text: '✎ note', mine: true };
 function parseInline(s) {
+  if (MINE_RE.test(s)) { MINE_RE.lastIndex = 0; const r = parseInline(s.replace(MINE_RE, '').trimEnd()); r.push({ text: ' ' }, { ...MINE_RUN }); return r; }
+  MINE_RE.lastIndex = 0;
   const runs = []; const re = /(\*\*[^*]+\*\*|__[^_]+__|\*[^*\s][^*]*\*|_[^_\s][^_]*_|`[^`]+`)/g; let last = 0, m;
   while ((m = re.exec(s))) {
     if (m.index > last) runs.push({ text: s.slice(last, m.index) });
@@ -515,29 +577,41 @@ function parseMd(md) {
       if (para || table) { const l = list; list = null; flush(); list = l; }
       list = list || { t: 'list', ordered: /^\s*\d+[.)]/.test(line), items: [] };
       list.items.push({ level: Math.min(2, Math.floor(line.match(/^\s*/)[0].length / 2)), runs: parseInline(line.replace(/^\s*([-*+]|\d+[.)])\s+/, '')) });
-    } else { if (list || table) flush(); (para = para || []).push(tr); }
+    } else { flush(); para = [tr]; }   // each line is its own paragraph, so plain-text pastes keep their shape
     if (tags.length) { flush(); tags.forEach(tag => out.push({ t: 'img', tag })); }
   }
   flush(); return out;
 }
+const FLAG_HEAD = 'Flagged as important';
 function finalBlocks() {
   const blocks = parseMd(M.finalMd || '');
+  // Starred notes always appear in the final notes, even if Claude's reply left them out
+  const flagged = M.notes.filter(n => n.important).sort((a, b) => a.at - b.at);
+  const hasFlagSection = blocks.some(b => b.t === 'h' && /flag|important|★/i.test(b.runs.map(r => r.text).join('')));
+  blocks.forEach((b, i) => { if (b.t === 'h' && /flag/i.test(b.runs.map(r => r.text).join('')) && blocks[i + 1]?.t === 'list') blocks[i + 1].flagged = true; });
+  if (flagged.length && !hasFlagSection) {
+    blocks.unshift({ t: 'h', level: 2, runs: [{ text: FLAG_HEAD }] }, { t: 'list', ordered: false, flagged: true,
+      items: flagged.map(n => ({ level: 0, runs: [{ text: n.kind === 'snip' ? `Screenshot${n.body ? ': ' + n.body : ''}` : n.body.replace(/\n+/g, ' ') }, { text: `  (${hm(n.at)}) `, italic: true }, { ...MINE_RUN }] })) });
+  }
   const used = new Set(blocks.filter(b => b.t === 'img').map(b => b.tag));
   const extra = M.notes.filter(n => n.kind === 'snip' && !used.has(snipTag(n))).sort((a, b) => a.at - b.at);
   if (extra.length) { blocks.push({ t: 'h', level: 2, runs: [{ text: 'Other screenshots' }] }); extra.forEach(n => blocks.push({ t: 'img', tag: snipTag(n) })); }
   return blocks;
 }
-const runsHtml = runs => runs.map(r => { let h = esc(r.text); if (r.code) h = `<code>${h}</code>`; if (r.bold) h = `<strong>${h}</strong>`; if (r.italic) h = `<em>${h}</em>`; return h; }).join('');
+const LEGEND = 'Points marked ✎ note come from notes typed during the meeting. Unmarked points come from the recording transcript.';
+const hasMine = blocks => blocks.some(b => [...(b.runs || []), ...(b.items || []).flatMap(i => i.runs), ...(b.rows || []).flat(2)].some(r => r.mine));
+const runsHtml = runs => runs.map(r => { if (r.mine) return `<span class="mine">${esc(r.text)}</span>`; let h = esc(r.text); if (r.code) h = `<code>${h}</code>`; if (r.bold) h = `<strong>${h}</strong>`; if (r.italic) h = `<em>${h}</em>`; return h; }).join('');
 function metaLine() { const s = M.rec?.start || M.createdAt, e = M.rec?.start ? audioToClock(M.rec.duration || 0, M.rec) : s; return `${day(s)} · ${hm(s)}–${hm(e)}${M.rec?.duration ? ` · ${dur(M.rec.duration)} recorded` : ''}`; }
 function renderFinal() {
   const md = M.finalMd || '';
   $('finalEmpty').hidden = !!md; $('finalDoc').hidden = !md;
   if (!md) return;
-  $('finalDoc').innerHTML = `<h1>${esc(M.title)}</h1><div class="dmeta">${esc(metaLine())}</div>` + finalBlocks().map(b => {
+  const fb = finalBlocks();
+  $('finalDoc').innerHTML = `<h1>${esc(M.title)}</h1><div class="dmeta">${esc(metaLine())}</div>` + (hasMine(fb) ? `<div class="legend">${runsHtml([{ text: 'Points marked ' }, { ...MINE_RUN }, { text: LEGEND.replace('Points marked ✎ note', '') }])}</div>` : '') + fb.map(b => {
     if (b.t === 'h') { const h = b.level <= 2 ? 2 : 3; return `<h${h}>${runsHtml(b.runs)}</h${h}>`; }
     if (b.t === 'p') return `<p>${runsHtml(b.runs)}</p>`;
     if (b.t === 'hr') return '<hr>';
-    if (b.t === 'list') { const tg = b.ordered ? 'ol' : 'ul'; return `<${tg}>` + b.items.map(i => `<li style="margin-left:${i.level * 18}px">${runsHtml(i.runs)}</li>`).join('') + `</${tg}>`; }
+    if (b.t === 'list') { const tg = b.ordered ? 'ol' : 'ul'; return `<${tg}${b.flagged ? ' class="flagged"' : ''}>` + b.items.map(i => `<li style="margin-left:${i.level * 18}px">${runsHtml(i.runs)}</li>`).join('') + `</${tg}>`; }
     if (b.t === 'table') return `<div class="tablewrap"><table>${b.rows.map((r, i) => `<tr>${r.map(c => i ? `<td>${runsHtml(c)}</td>` : `<th>${runsHtml(c)}</th>`).join('')}</tr>`).join('')}</table></div>`;
     if (b.t === 'img') { const n = snipByTag(b.tag); return n ? `<span class="fig"><img data-id="${n.id}" alt="${esc(n.body || 'Screenshot')}"><small>${esc(n.body ? n.body + ' · ' : '')}${esc(clock(n.at))}</small></span>` : `<p class="sub">[${esc(b.tag)}: screenshot not found]</p>`; }
     return '';
@@ -546,7 +620,46 @@ function renderFinal() {
 }
 
 /* ---------------- downloads ---------------- */
-$('dlPdf').onclick = () => { setTab('final'); toast('Choose “Save as PDF” as the printer.', 3500); setTimeout(() => print(), 300); };
+/* PDF: print a clean, letter-size copy of the final notes (not the whole app screen) */
+async function printHtml() {
+  const doc = $('finalDoc').cloneNode(true);
+  for (const img of doc.querySelectorAll('img[data-id]')) img.src = (await snipSrc(img.dataset.id)) || '';
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(M.title)}</title><style>
+@page{size:letter;margin:0.7in}
+body{margin:0;color:#14181b;font-family:"Segoe UI",Calibri,Arial,sans-serif;font-size:11.5pt;line-height:1.45}
+h1{font-size:20pt;margin:0 0 4pt}
+.dmeta{color:#5a6064;font-size:10pt;border-bottom:3pt solid #c6f432;padding-bottom:6pt;margin-bottom:12pt}
+h2{font-size:14.5pt;margin:16pt 0 6pt;border-bottom:1px solid #d5dad8;padding-bottom:3pt;break-after:avoid}
+h3{font-size:12.5pt;margin:12pt 0 4pt;break-after:avoid}
+p,li{font-size:11.5pt} ul,ol{padding-left:18pt;margin:4pt 0} li{margin:2pt 0}
+table{border-collapse:collapse;width:100%;margin:8pt 0;font-size:10.5pt;break-inside:auto}
+th,td{border:1px solid #c9cfcc;padding:4pt 6pt;text-align:left;vertical-align:top}
+th{background:#14181b;color:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+code{font-family:Consolas,monospace;font-size:10pt}
+.fig{display:block;margin:8pt 0 12pt;break-inside:avoid}
+.fig img{display:block;max-width:100%;max-height:6.2in;border:1px solid #c9cfcc}
+.fig small{display:block;color:#5a6064;font-size:9.5pt;margin-top:3pt}
+.flagged{border-left:4pt solid #b7791f;background:#fbf5e6;padding:6pt 10pt 6pt 24pt;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+hr{border:0;border-top:1px solid #d5dad8;margin:12pt 0}
+.mine{display:inline-block;font-size:8.5pt;font-weight:600;color:#1f5f99;background:#e6f0fa;border-radius:3pt;padding:0 4pt;white-space:nowrap;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.legend{font-size:9.5pt;color:#5a6064;margin:-6pt 0 10pt}
+</style></head><body>${doc.innerHTML}</body></html>`;
+}
+$('dlPdf').onclick = async () => {
+  const html = await printHtml();
+  const f = document.createElement('iframe');
+  f.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0';
+  document.body.appendChild(f);
+  f.onload = () => {
+    const imgs = [...f.contentDocument.images];
+    Promise.all(imgs.map(i => i.complete ? 0 : new Promise(r => { i.onload = i.onerror = r; }))).then(() => {
+      toast('Choose “Save as PDF” as the printer.', 3500);
+      f.contentWindow.focus(); f.contentWindow.print();
+      setTimeout(() => f.remove(), 60000);
+    });
+  };
+  f.srcdoc = html;
+};
 $('dlTx').onclick = () => {
   const lines = txBlocks().map(b => `[${clock(b.at)}] ${b.text}`);
   download(new Blob([`${M.title}\n${metaLine()}\nAutomatic transcript (no speaker names; may contain errors)\n\n${lines.join('\n\n')}\n`], { type: 'text/plain' }), `${safeName(M.title)}-transcript.txt`);
@@ -561,13 +674,15 @@ $('dlWord').onclick = async () => {
 };
 async function buildDocx() {
   const D = window.docx;
-  const toRuns = runs => runs.map(r => new D.TextRun({ text: r.text, bold: !!r.bold, italics: !!r.italic, font: r.code ? 'Consolas' : undefined }));
+  const toRuns = runs => runs.map(r => r.mine ? new D.TextRun({ text: r.text, bold: true, color: '1F5F99', size: 17, shading: { type: D.ShadingType.CLEAR, color: 'auto', fill: 'E6F0FA' } }) : new D.TextRun({ text: r.text, bold: !!r.bold, italics: !!r.italic, font: r.code ? 'Consolas' : undefined }));
   const H = [D.HeadingLevel.HEADING_1, D.HeadingLevel.HEADING_1, D.HeadingLevel.HEADING_1, D.HeadingLevel.HEADING_2];
   const children = [
     new D.Paragraph({ heading: D.HeadingLevel.TITLE, children: [new D.TextRun({ text: M.title })] }),
     new D.Paragraph({ children: [new D.TextRun({ text: metaLine(), color: '5A6064', size: 20 })], spacing: { after: 200 } })
   ];
-  for (const b of finalBlocks()) {
+  const fb = finalBlocks();
+  if (hasMine(fb)) children.push(new D.Paragraph({ children: [new D.TextRun({ text: 'Points marked ', color: '5A6064', size: 19 }), ...toRuns([{ ...MINE_RUN }]), new D.TextRun({ text: LEGEND.replace('Points marked ✎ note', ''), color: '5A6064', size: 19 })], spacing: { after: 200 } }));
+  for (const b of fb) {
     if (b.t === 'h') children.push(new D.Paragraph({ heading: H[b.level], children: toRuns(b.runs) }));
     else if (b.t === 'p') children.push(new D.Paragraph({ children: toRuns(b.runs), spacing: { after: 120 } }));
     else if (b.t === 'hr') children.push(new D.Paragraph({ border: { bottom: { color: 'CCCCCC', style: D.BorderStyle.SINGLE, size: 6, space: 1 } }, children: [] }));
@@ -576,7 +691,7 @@ async function buildDocx() {
       const cols = Math.max(...b.rows.map(r => r.length));
       children.push(new D.Table({ width: { size: 100, type: D.WidthType.PERCENTAGE }, rows: b.rows.map((r, ri) => new D.TableRow({ tableHeader: ri === 0,
         children: Array.from({ length: cols }, (_, ci) => new D.TableCell({ shading: ri === 0 ? { fill: '14181B', type: D.ShadingType.CLEAR, color: 'auto' } : undefined,
-          children: [new D.Paragraph({ children: (r[ci] || [{ text: '' }]).map(x => new D.TextRun({ text: x.text, bold: ri === 0 || !!x.bold, italics: !!x.italic, color: ri === 0 ? 'FFFFFF' : undefined })) })] })) })) }));
+          children: [new D.Paragraph({ children: (r[ci] || [{ text: '' }]).map(x => x.mine ? toRuns([x])[0] : new D.TextRun({ text: x.text, bold: ri === 0 || !!x.bold, italics: !!x.italic, color: ri === 0 ? 'FFFFFF' : undefined })) })] })) })) }));
       children.push(new D.Paragraph({ children: [] }));
     } else if (b.t === 'img') {
       const n = snipByTag(b.tag); if (!n) continue;

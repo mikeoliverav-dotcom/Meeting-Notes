@@ -52,11 +52,11 @@ Recording and transcription need a secure **https** address, which GitHub Pages 
    - "Include my mic" adds your voice. **Headphones** keep the call audio from being picked up twice.
 3. During the call:
    - **📷 Screenshot** freezes what you're sharing; drag a box around the part you want and it's captured when you let go (or press **Enter** to reuse the last area, or **Whole screen**). You can also press **Win+Shift+S**, snip, then **Ctrl+V** in the app. Add a short caption, such as "Option B slide", because it helps Claude place the screenshot.
-   - Type notes and press **Enter**. Use **★ Important** for the things that matter most.
+   - Type notes and press **Enter**. Use **★ Important** (or the ★ on any note) for the things that matter most. Starred items always appear in a highlighted **Flagged as important** section at the top of the final notes.
    - **Pause** and **Stop** are in step 1. **Record more** adds to the same meeting.
 4. **Transcribe recording** (step 2). You can also choose **Use an audio file…** to transcribe a recording from elsewhere, such as a Teams or Zoom recording or a voice memo.
 5. **Copy for Claude** (step 3), paste it into a Claude chat, and copy Claude's reply.
-6. Paste the reply in step 4 and click **Save final notes**. Screenshot tags like `[IMG-4F2A]` turn back into the actual screenshots. Any screenshot Claude didn't place goes into an "Other screenshots" section at the end.
+6. Copy Claude's reply with the **Copy** button under it (or select it and press Ctrl+C; headings, bullets and tables are kept either way), paste it in step 4 and click **Save final notes**. Screenshot tags like `[IMG-4F2A]` turn back into the actual screenshots. Any screenshot Claude didn't place goes into an "Other screenshots" section at the end. Points that came from your typed notes carry a small blue **✎ note** tag. Unmarked points came from the recording transcript.
 7. **Download** (step 5): **PDF** (choose "Save as PDF" in the print window), **Word**, the **Transcript** as a text file, or the **Audio**.
 
 **Recording etiquette and the law:** tell everyone on the call that you're recording. Texas only requires one party's consent, but participants in other states may be covered by all-party consent laws.

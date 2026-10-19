@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Meeting Notes</title>
+<meta name="description" content="Record a call, grab screenshots, transcribe in the browser, and turn it into clean notes with Claude.">
+<meta name="theme-color" content="#14181b">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2314181b'/%3E%3Crect x='24' y='10' width='16' height='28' rx='8' fill='%23c6f432'/%3E%3Cpath d='M16 30a16 16 0 0 0 32 0' fill='none' stroke='%23c6f432' stroke-width='5' stroke-linecap='round'/%3E%3Cpath d='M32 46v9' stroke='%23c6f432' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+/* Layout: desktop work screen — combined timeline on the left, step-by-step controls on the right. */
+:root{
+  --bg:#f3f5f4; --surface:#fff; --ink:#14181b; --muted:#5a6064; --line:#d5dad8; --soft:#eef1ef;
+  --accent:#c6f432; --accent-ink:#14181b; --accent-soft:#f3fbd9; --bar:#14181b;
+  --rec:#d93025; --star:#b7791f; --danger:#b3261e; --ok:#1e7a44; --tx:#3b4a55; --shadow:0 10px 30px rgba(0,0,0,.14);
+  --f:"Segoe UI",system-ui,-apple-system,Roboto,Arial,sans-serif; --mono:ui-monospace,"Cascadia Mono",Consolas,Menlo,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#0f1213; --surface:#191d1f; --ink:#eef1ef; --muted:#a2a9a5; --line:#2e3437; --soft:#22272a;
+  --accent:#c6f432; --accent-ink:#14181b; --accent-soft:#232b14; --bar:#000;
+  --rec:#ff5b4f; --star:#f2b84b; --danger:#ff7a6e; --ok:#5cc08a; --tx:#c4ced5; --shadow:0 10px 30px rgba(0,0,0,.5); color-scheme:dark}}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--f);font-size:15px;line-height:1.45}
+[hidden]{display:none!important}
+button,input,textarea,select{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:3px solid var(--ink);outline-offset:2px}
+a{color:inherit}
+.topbar{position:sticky;top:0;z-index:10;background:var(--bar);color:#fff;border-bottom:3px solid var(--accent)}
+.topbar .in{max-width:1320px;margin:0 auto;display:flex;align-items:center;gap:14px;min-height:54px;padding:0 16px}
+.brand{font-weight:700;font-size:17px;white-space:nowrap;text-decoration:none}
+.brand span{color:var(--accent)}
+.mtitle{font-weight:600;color:#cfd5d2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;background:transparent;border:0;border-bottom:1px dashed transparent;padding:2px 0;max-width:46vw}
+.mtitle:hover,.mtitle:focus{border-bottom-color:#666;outline:none}
+.recchip{margin-left:auto;display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:13px;color:#cfd5d2;white-space:nowrap}
+.recdot{width:10px;height:10px;border-radius:5px;background:#666}
+.recdot.on{background:var(--rec);animation:pulse 1.4s infinite}
+.recdot.paused{background:#e0a400}
+@keyframes pulse{50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.recdot.on{animation:none}}
+.wrap{max-width:1320px;margin:0 auto;padding:20px 16px 40px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:40px;padding:0 14px;border-radius:8px;border:1.5px solid var(--line);background:var(--surface);font-weight:700;font-size:14px;color:var(--ink);white-space:nowrap;text-decoration:none}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn.dark{background:var(--ink);border-color:var(--ink);color:var(--bg)}
+.btn.rec{background:var(--rec);border-color:var(--rec);color:#fff}
+.btn.danger{color:var(--danger);border-color:var(--danger);background:transparent}
+.btn.confirm{background:var(--danger)!important;border-color:var(--danger)!important;color:#fff!important}
+.btn.small{min-height:32px;padding:0 10px;font-size:13px}
+.btn.ghost{border-color:transparent;background:transparent}
+.btn:disabled{opacity:.45;cursor:default}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.spacer{flex:1}
+.sub{color:var(--muted);font-size:13px;margin:0}
+h1{font-size:28px;margin:0 0 6px;text-wrap:balance}
+h2.sec{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 10px;border-bottom:2px solid var(--accent);padding-bottom:6px;display:flex;justify-content:space-between;gap:8px}
+.field{width:100%;border:1.5px solid var(--line);border-radius:8px;background:var(--bg);padding:9px 12px;font-size:15px;color:var(--ink)}
+.field:focus{border-color:var(--ink);outline:none}
+label.fl{display:flex;flex-direction:column;gap:5px;font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px}
+.check{display:flex;gap:8px;align-items:center;font-size:14px}
+.check input{width:18px;height:18px;accent-color:var(--ink)}
+
+/* home */
+.centre{max-width:640px;margin:36px auto 0;display:flex;flex-direction:column;gap:16px}
+.mlist{display:flex;flex-direction:column;gap:6px}
+.mitem{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+.mitem a{flex:1;min-width:0;text-decoration:none;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mitem span{color:var(--muted);font-size:13px;white-space:nowrap}
+
+/* meeting */
+.grid{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:20px;align-items:start}
+@media (max-width:960px){.grid{grid-template-columns:1fr}}
+.side{display:flex;flex-direction:column;gap:14px;position:sticky;top:74px;max-height:calc(100vh - 90px);overflow:auto}
+@media (max-width:960px){.side{position:static;max-height:none}}
+.tabs{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
+.tabs button{border:1.5px solid var(--line);background:var(--surface);border-radius:999px;padding:6px 14px;font-weight:700;font-size:13px}
+.tabs button.on{background:var(--ink);border-color:var(--ink);color:var(--bg)}
+.filters{margin-left:auto;display:flex;gap:10px;font-size:13px;color:var(--muted)}
+.filters label{display:flex;gap:5px;align-items:center}
+
+.tl{display:flex;flex-direction:column;gap:6px;min-height:140px}
+.item{display:grid;grid-template-columns:86px 1fr auto;gap:10px;align-items:start;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:9px 12px}
+.item .t{font-family:var(--mono);font-size:12px;color:var(--muted);padding-top:2px}
+.item .b{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.item .b[contenteditable="true"]{outline:2px solid var(--ink);border-radius:4px;padding:2px 4px;background:var(--bg)}
+.item.note{border-left:4px solid var(--ink)}
+.item.imp{border-left-color:var(--star)}
+.item.snip{border-left:4px solid var(--accent)}
+.item.tx{background:transparent;border-color:transparent;border-left:4px solid var(--line);color:var(--tx);padding-top:4px;padding-bottom:4px}
+.item .kind{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin-bottom:2px}
+.acts{display:flex;gap:2px;opacity:.5}
+.item:hover .acts,.item:focus-within .acts{opacity:1}
+.icon{width:30px;height:30px;border-radius:6px;border:0;background:transparent;font-size:15px;display:grid;place-items:center;color:var(--muted)}
+.icon:hover{background:var(--bg);color:var(--ink)}
+.icon.on{color:var(--star)}
+.icon.confirm{background:var(--danger);color:#fff}
+.snipimg{display:block;max-width:100%;max-height:340px;border-radius:6px;border:1px solid var(--line);margin-bottom:6px;background:var(--bg)}
+.cap{width:100%;border:1px dashed var(--line);border-radius:6px;background:transparent;padding:6px 8px;font-size:14px;color:var(--ink)}
+.cap:focus{border-style:solid;border-color:var(--ink);outline:none}
+.tag{font-family:var(--mono);font-size:11px;font-weight:700;padding:1px 6px;border-radius:4px;background:var(--ink);color:var(--bg)}
+.empty{border:1.5px dashed var(--line);border-radius:10px;padding:18px;color:var(--muted)}
+
+.composer{position:sticky;bottom:0;margin-top:14px;background:var(--bg);padding:10px 0 14px}
+.composer .box{background:var(--surface);border:1.5px solid var(--ink);border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:8px;box-shadow:var(--shadow)}
+.composer textarea{border:0;background:transparent;resize:none;min-height:52px;max-height:220px;padding:4px 6px;font-size:16px;color:var(--ink);outline:none}
+.composer .hint{font-size:12px;color:var(--muted)}
+kbd{font-family:var(--mono);font-size:11px;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:0 4px;background:var(--bg)}
+.toggle.on{background:var(--accent-soft);border-color:var(--star);color:var(--star)}
+
+.step{display:grid;grid-template-columns:28px 1fr;gap:10px}
+.step .n{width:26px;height:26px;border-radius:13px;background:var(--ink);color:var(--bg);display:grid;place-items:center;font-weight:700;font-size:13px}
+.step.done .n{background:var(--accent);color:var(--accent-ink)}
+.step p{margin:0 0 8px;font-size:14px}
+.meters{display:flex;flex-direction:column;gap:6px;margin:10px 0}
+.meter{display:grid;grid-template-columns:72px 1fr;gap:8px;align-items:center;font-size:12px;color:var(--muted)}
+.meter i{display:block;height:8px;border-radius:4px;background:var(--soft);overflow:hidden;position:relative}
+.meter i b{position:absolute;left:0;top:0;bottom:0;width:0;background:var(--ok);transition:width .1s}
+.warn{border:1px solid var(--star);background:var(--accent-soft);border-radius:8px;padding:8px 10px;font-size:13px}
+.bar{height:10px;border-radius:5px;background:var(--soft);overflow:hidden;margin:8px 0 4px}
+.bar b{display:block;height:100%;width:0;background:var(--accent);transition:width .3s}
+select.field{padding:8px 10px}
+textarea.final{min-height:160px;resize:vertical;font-family:var(--mono);font-size:13px}
+video.hiddenvid{position:fixed;left:-9999px;width:2px;height:2px}
+.cropov{position:fixed;inset:0;z-index:60;background:rgba(10,12,13,.92);display:flex;flex-direction:column}
+.cropbar{display:flex;align-items:center;gap:8px;padding:12px 20px;color:#fff;font-size:14px}
+.cropbar .btn.ghost{color:#fff}
+.cropstage{flex:1;min-height:0;display:grid;place-items:center;padding:0 20px 20px}
+.cropwrap{position:relative;line-height:0;box-shadow:0 0 0 1px #444;overflow:hidden}
+.cropwrap canvas{display:block;cursor:crosshair;max-width:100%}
+.cropbox{position:absolute;border:2px solid #c6f432;box-shadow:0 0 0 9999px rgba(0,0,0,.55);cursor:crosshair}
+
+/* final document */
+.doc{background:#fff;color:#14181b;border-radius:12px;border:1px solid var(--line);padding:32px 36px;max-width:840px}
+.doc h1{font-size:24px;margin:0 0 4px}
+.doc .dmeta{color:#5a6064;font-size:13px;margin-bottom:18px;border-bottom:3px solid #c6f432;padding-bottom:10px}
+.doc h2{font-size:18px;margin:22px 0 8px;border-bottom:1px solid #dde2df;padding-bottom:4px}
+.doc h3{font-size:15px;margin:16px 0 6px}
+.doc p,.doc li{font-size:14.5px;line-height:1.55}
+.doc ul,.doc ol{padding-left:22px;margin:6px 0}
+.doc table{border-collapse:collapse;width:100%;margin:10px 0;font-size:13.5px}
+.doc th,.doc td{border:1px solid #d5dad8;padding:6px 8px;text-align:left;vertical-align:top}
+.doc th{background:#14181b;color:#fff}
+.doc code{font-family:var(--mono);background:#f1f3f2;padding:0 4px;border-radius:3px}
+.doc .fig{display:block;margin:10px 0 14px}
+.doc .fig img{display:block;max-width:100%;max-height:520px;border:1px solid #d5dad8;border-radius:6px}
+.doc .fig small{display:block;color:#5a6064;font-size:12px;margin-top:4px}
+.doc hr{border:0;border-top:1px solid #dde2df;margin:18px 0}
+.tablewrap{overflow-x:auto}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:24px;z-index:50;background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:8px;font-size:14px;box-shadow:var(--shadow);max-width:calc(100% - 32px)}
+@media print{
+  body{background:#fff}
+  .topbar,.side,.composer,.tabs,.toast,.noprint{display:none!important}
+  .wrap{padding:0;max-width:none} .grid{display:block} .doc{border:0;padding:0;max-width:none} .fig{break-inside:avoid}
+}
+</style>
+</head>
+<body>
+<header class="topbar"><div class="in">
+  <a class="brand" href="./">Meeting <span>Notes</span></a>
+  <input class="mtitle" id="hdrTitle" aria-label="Meeting name" maxlength="120" hidden>
+  <span class="recchip" id="recChip" hidden><span class="recdot" id="recDot"></span><span id="recTime">0:00</span></span>
+</div></header>
+
+<main class="wrap">
+  <!-- HOME -->
+  <section id="vHome" hidden>
+    <div class="centre">
+      <div>
+        <h1>Meeting Notes</h1>
+        <p class="sub">Record a call, grab screenshots and jot quick notes. Afterwards, transcribe the recording right in your browser and turn everything into clean notes with Claude. Recordings and notes stay on this computer.</p>
+      </div>
+      <form class="card row" id="newForm" autocomplete="off">
+        <input class="field" id="newTitle" maxlength="120" placeholder="Meeting name, e.g. Acme HQ — AV design review" style="flex:1;min-width:220px" required>
+        <button class="btn primary" type="submit">New meeting</button>
+      </form>
+      <div id="listWrap" hidden>
+        <h2 class="sec">Your meetings <span id="usage" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
+        <div class="mlist" id="mlist"></div>
+      </div>
+      <p class="sub">Works best in Chrome or Edge on a computer. <a href="#help" id="helpLink">How it works</a> · <span id="ver"></span></p>
+      <div class="card" id="help" hidden>
+        <h2 class="sec">How it works</h2>
+        <ol style="margin:0;padding-left:20px;display:flex;flex-direction:column;gap:6px;font-size:14px">
+          <li><b>Record.</b> Click Start recording and choose what to share. For calls in a browser (Meet, Zoom web), pick the <b>tab</b> and leave “Share tab audio” on. For the Teams or Zoom desktop apps, pick <b>Entire screen</b> and turn on “Share system audio.” Your microphone is added too.</li>
+          <li><b>Capture.</b> Click Screenshot (or press <kbd>Win</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd>, then <kbd>Ctrl</kbd>+<kbd>V</kbd> here) and type quick notes. Everything is time-stamped.</li>
+          <li><b>Transcribe.</b> After the call, click Transcribe. The speech model downloads the first time and is then saved in your browser.</li>
+          <li><b>Summarize.</b> Copy for Claude, paste Claude's reply back, and download a PDF or Word file with your screenshots in place.</li>
+        </ol>
+        <p class="sub" style="margin-top:10px">Let people know you're recording.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- MEETING -->
+  <section id="vMeet" hidden>
+    <div class="grid">
+      <div>
+        <div class="tabs">
+          <button id="tabTl" class="on">Timeline</button>
+          <button id="tabFinal">Final notes</button>
+          <span class="filters" id="filters"><label><input type="checkbox" id="fTx" checked> Transcript</label><label><input type="checkbox" id="fNotes" checked> Notes &amp; screenshots</label></span>
+        </div>
+        <div id="paneTl">
+          <div class="tl" id="tl"></div>
+          <div class="composer" id="composer">
+            <div class="box">
+              <textarea id="noteIn" rows="2" placeholder="Type a note and press Enter…"></textarea>
+              <div class="row">
+                <button class="btn small toggle" id="impBtn" type="button" title="Mark the next note as important">★ Important</button>
+                <button class="btn small" id="shotBtn" type="button" title="Capture the shared screen">📷 Screenshot</button>
+                <button class="btn small" id="imgBtn" type="button">＋ Image</button>
+                <input type="file" id="imgFile" accept="image/*" hidden>
+                <span class="spacer"></span>
+                <button class="btn small primary" id="addBtn" type="button">Add note</button>
+              </div>
+              <div class="hint">Enter adds the note · Shift+Enter for a new line · Paste screenshots with <kbd>Ctrl</kbd>+<kbd>V</kbd></div>
+            </div>
+          </div>
+        </div>
+        <div id="paneFinal" hidden>
+          <div class="empty" id="finalEmpty">No final notes yet. Transcribe the recording, copy everything for Claude, then paste Claude's reply in step 4.</div>
+          <article class="doc" id="finalDoc" hidden></article>
+        </div>
+      </div>
+
+      <aside class="side">
+        <div class="card step" id="st1"><span class="n">1</span><div>
+          <p><b>Record the call</b></p>
+          <div id="recIdle" class="row">
+            <button class="btn rec" id="recBtn">● Start recording</button>
+            <label class="check"><input type="checkbox" id="useMic" checked> Include my mic</label>
+          </div>
+          <div id="recLive" hidden>
+            <div class="row"><button class="btn" id="pauseBtn">Pause</button><button class="btn dark" id="stopBtn">Stop</button></div>
+            <div class="meters"><div class="meter">Call audio<i><b id="mCall"></b></i></div><div class="meter">Your mic<i><b id="mMic"></b></i></div></div>
+          </div>
+          <div class="warn" id="noCallAudio" hidden>No call audio is being captured. Stop, then share the meeting <b>tab</b> with “Share tab audio” on, or <b>Entire screen</b> with “Share system audio” on.</div>
+          <p class="sub" id="recInfo"></p>
+          <p class="sub" style="margin-top:6px">Headphones give the cleanest transcript. Let people know you're recording.</p>
+        </div></div>
+
+        <div class="card step" id="st2"><span class="n">2</span><div>
+          <p><b>Transcribe</b> <span class="sub">runs on this computer</span></p>
+          <select class="field" id="model" aria-label="Transcription quality">
+            <option value="Xenova/whisper-base.en">English — fast</option>
+            <option value="Xenova/whisper-small.en">English — more accurate (slower)</option>
+            <option value="Xenova/whisper-base">Other languages</option>
+          </select>
+          <div class="row" style="margin-top:8px">
+            <button class="btn primary" id="txBtn">Transcribe recording</button>
+            <button class="btn small ghost" id="txFileBtn" title="Transcribe a recording made elsewhere, such as a Teams or Zoom recording">Use an audio file…</button>
+            <input type="file" id="txFile" accept="audio/*,video/*" hidden>
+          </div>
+          <div id="txProg" hidden><div class="bar"><b id="txBar"></b></div><p class="sub" id="txMsg"></p><button class="btn small ghost" id="txCancel">Cancel</button></div>
+          <p class="sub" id="txInfo"></p>
+        </div></div>
+
+        <div class="card step" id="st3"><span class="n">3</span><div>
+          <p><b>Copy everything for Claude</b> — transcript, notes and screenshot tags in time order, with instructions.</p>
+          <div class="row"><button class="btn primary" id="copyClaude">Copy for Claude</button><a class="btn" href="https://claude.ai/new" target="_blank" rel="noopener">Open Claude ↗</a></div>
+        </div></div>
+
+        <div class="card step" id="st4"><span class="n">4</span><div>
+          <p><b>Paste Claude's reply</b> and save. Tags like [IMG-4F2A] turn back into your screenshots.</p>
+          <textarea class="field final" id="finalIn" placeholder="Paste Claude's reply…"></textarea>
+          <div class="row" style="margin-top:8px"><button class="btn dark" id="saveFinal">Save final notes</button></div>
+        </div></div>
+
+        <div class="card step" id="st5"><span class="n">5</span><div>
+          <p><b>Download</b></p>
+          <div class="row"><button class="btn" id="dlPdf">PDF</button><button class="btn" id="dlWord">Word</button><button class="btn small" id="dlTx">Transcript (.txt)</button><button class="btn small" id="dlAudio">Audio</button></div>
+          <div class="row" style="margin-top:12px"><span class="spacer"></span><button class="btn small danger" id="delMeeting">Delete meeting</button></div>
+        </div></div>
+      </aside>
+    </div>
+  </section>
+</main>
+<video class="hiddenvid" id="shareVid" muted playsinline></video>
+<div class="cropov" id="cropOv" hidden role="dialog" aria-label="Select screenshot area">
+  <div class="cropbar"><span id="cropHint">Drag a box around the part you want.</span><span class="spacer"></span>
+    <button class="btn small ghost" id="cropCancel">Cancel</button><button class="btn small" id="cropAll">Whole screen</button><button class="btn small primary" id="cropUse" disabled>Use selection</button></div>
+  <div class="cropstage"><div class="cropwrap"><canvas id="cropCv"></canvas><div class="cropbox" id="cropBox" hidden></div></div></div>
+</div>
+<div class="toast" id="toast" hidden></div>
+<script src="vendor/docx.umd.js" defer></script>
+<script src="app.js"></script>
+</body>
+</html>
